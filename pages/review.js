@@ -52,37 +52,22 @@ export default function Review() {
   }
 
   async function seed() {
-    // 카드 없을 때 샘플 12개 자동 생성 (AI/미디어/테크 B1)
     const { supabase } = await import('../utils/sb')
     const { data: { session } } = await supabase.auth.getSession()
     const uid = session?.user?.id
-    if (!uid) return
-    const today = new Date().toISOString().slice(0,10)
-    const items = [
-      ['algorithm','A set of rules to solve a problem'],
-      ['dataset','A collection of data used for analysis'],
-      ['prototype','An early sample to test a concept'],
-      ['iterate','To repeat to improve a result'],
-      ['deploy','To release a product or feature'],
-      ['outage','A period when a service is unavailable'],
-      ['roadmap','A plan that shows goals and timelines'],
-      ['leverage','To use something to get a better result'],
-      ['broadcast','To send content to many people'],
-      ['survey','A method of collecting opinions'],
-      ['metric','A number used to measure performance'],
-      ['latency','Delay before a transfer of data begins']
-    ].map(([front, back]) => ({
-      user_id: uid,
-      front, back,
-      ease_factor: 2.5,
-      interval_days: 1,
-      reps: 0,
-      last_grade: null,
-      due_on: today
-    }))
-    const { error } = await supabase.from('srs_reviews').insert(items)
-    if (error) { alert('시드 추가 실패'); return }
-    await init()
+    if (!uid) { alert('로그인이 필요합니다.'); return }
+  
+    const res = await fetch('/api/seed-srs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: uid })
+    })
+    let j; try { j = await res.json() } catch { j = { ok:false, error:'invalid-json' } }
+    if (j.ok) {
+      await init()
+    } else {
+      alert('시드 추가 실패: ' + (j.error || 'unknown') + (j.details ? `\n- ${j.details}` : ''))
+    }
   }
 
   const cur = cards[idx]
