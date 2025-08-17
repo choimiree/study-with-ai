@@ -21,7 +21,8 @@ export default function Home() {
       <p style={{opacity:.8}}>로그인: {email ? email : '미로그인'}</p>
       <ul>
         <li><Link href="/today">오늘의 미션</Link></li>
-        <li><Link href="/report">리포트</Link></li>    
+        <li><Link href="/report">리포트</Link></li>
+        <li><Link href="/review">복습(SRS)</Link></li>
         <li><Link href="/settings">설정</Link></li>
         {!email && <li><Link href="/login">로그인</Link></li>}
       </ul>
