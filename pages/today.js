@@ -395,7 +395,14 @@ function ListeningBlock() {
   const [mat, setMat] = useState(null)
   const [done, setDone] = useState(false)
 
-  useEffect(() => { (async () => { setMat(await pickListeningByInterest()) })() }, [])
+  useEffect(() => { (async () => {
+    try {
+      const picks = await getDailyPicks(5)
+      setMat(picks.listening || null)
+    } catch (e) {
+      console.error(e); setMat(null)
+    }
+  })() }, [])
 
   async function markDone() {
     const { supabase } = await import('../utils/sb')
@@ -411,7 +418,9 @@ function ListeningBlock() {
     alert('리스닝 완료 체크!')
   }
 
-  if (!mat) return <div>자료 불러오는 중…</div>
+  if (mat === null) return <div>자료 불러오는 중…</div>
+  if (!mat) return <div>오늘 리스닝 자료가 없습니다.</div>
+
   return (
     <div style={{ marginTop:10 }}>
       <div style={{ fontWeight:600 }}>{mat.title}</div>
@@ -429,10 +438,17 @@ function ListeningBlock() {
 
 // 📝 Vocab Block
 function VocabBlock({ missionId }) {
-  const [items, setItems] = useState([])
+  const [items, setItems] = useState(null)
   const [done, setDone] = useState(false)
 
-  useEffect(() => { (async () => { setItems(await getDailyVocab(5)) })() }, [])
+  useEffect(() => { (async () => {
+    try {
+      const picks = await getDailyPicks(5)
+      setItems(picks.vocab || [])
+    } catch (e) {
+      console.error(e); setItems([])
+    }
+  })() }, [])
 
   async function complete() {
     const { supabase } = await import('../utils/sb')
@@ -441,14 +457,16 @@ function VocabBlock({ missionId }) {
     const today = new Date().toISOString().slice(0,10)
     const { error } = await supabase.from('submissions').insert({
       mission_id: missionId, user_id: uid, date: today, kind: 'vocab',
-      meta: { vocab_ids: items.map(i=>i.id) }
+      meta: { vocab_ids: (items || []).map(i=>i.id) }
     })
     if (error) { console.error(error); alert('제출 실패'); return }
     setDone(true)
     alert('단어 암기 완료!')
   }
 
-  if (!items.length) return <div>단어 불러오는 중…</div>
+  if (items === null) return <div>단어 불러오는 중…</div>
+  if (!items.length) return <div>오늘 표시할 단어가 없습니다.</div>
+
   return (
     <div style={{ marginTop:10 }}>
       <ul>
@@ -466,37 +484,19 @@ function VocabBlock({ missionId }) {
   )
 }
 
-// ⚙️ helper (관심사 기반 추천)
-async function pickListeningByInterest() {
+// 하루 추천 가져오기 (없으면 생성해서 반환)
+async function getDailyPicks(vocabLimit = 5) {
   const { supabase } = await import('../utils/sb')
   const { data: { session } } = await supabase.auth.getSession()
   const uid = session?.user?.id
-  const { data: us } = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
-  const tags = us?.interests?.length ? us.interests : ['tech']
+  if (!uid) throw new Error('login-required')
 
-  let { data } = await supabase
-    .from('listening_materials')
-    .select('id, title, audio_url, script, tags')
-    .contains('tags', [tags[0]])
-    .limit(1)
-  if (!data || !data.length) {
-    const any = await supabase.from('listening_materials').select('id, title, audio_url, script, tags').limit(1)
-    data = any.data || []
-  }
-  return data[0] || null
-}
-
-async function getDailyVocab(limit = 5) {
-  const { supabase } = await import('../utils/sb')
-  const { data: { session } } = await supabase.auth.getSession()
-  const uid = session?.user?.id
-  let tag = null
-  if (uid) {
-    const r = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
-    tag = r.data?.interests?.[0]
-  }
-  let q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').order('id', { ascending:false }).limit(limit)
-  if (tag) q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').contains('tags', [tag]).order('id',{ascending:false}).limit(limit)
-  const { data } = await q
-  return data || []
+  const res = await fetch('/api/daily-picks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: uid, vocabLimit })
+  })
+  const j = await res.json()
+  if (!j.ok) throw new Error(j.error || 'daily-picks-failed')
+  return j // { ok, day, listening, vocab }
 }
