@@ -42,8 +42,7 @@ export default async function handler(req, res) {
     if (!audioResp.ok) return res.status(500).json({ ok: false, error: 'audio-download-failed', details: String(audioResp.status) });
 
     const audioArrayBuf = await audioResp.arrayBuffer();
-    if (!audioArrayBuf || audioArrayBuf.byteLength < 2048) {
-      // 2KB 미만이면 빈 파일 가능성
+    if (!audioArrayBuf || audioArrayBuf.byteLength < 512) {
       return res.status(400).json({ ok: false, error: 'audio-empty-or-too-small' });
     }
     const blob = new Blob([audioArrayBuf], { type: 'audio/webm' });
