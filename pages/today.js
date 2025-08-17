@@ -187,9 +187,14 @@ export default function Today() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ submissionId })
                       })
-                      const j = await res.json()
-                      if (j.ok) alert('스피킹 자동 채점 완료! 리포트에서 확인하세요.')
-                      else alert('채점 실패')
+                      let j
+                      try { j = await res.json() } catch { j = { ok:false, error: 'invalid-json' } }
+                      
+                      if (j.ok) {
+                        alert('스피킹 자동 채점 완료! 리포트에서 확인하세요.')
+                      } else {
+                        alert('채점 실패: ' + (j.error || 'unknown'))
+                      }
                     }}
                     style={{ marginLeft: 8 }}
                   >
