@@ -40,18 +40,46 @@ export default function Today() {
   
   async function getDailyVocab(limit = 5) {
     const { supabase } = await import('../utils/sb')
-    // 간단: 최신 추가 단어 상위 N개 (관심사 필터는 tags 포함시도 → 없으면 전체)
-    const { data: us } = await supabase.auth.getSession().then(async ({ data:{ session }}) => {
-      const uid = session?.user?.id
-      if (!uid) return { interests:null }
-      const r = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
-      return r.data || { interests:null }
-    })
-    const tag = us?.interests?.[0]
-    let q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').order('id', { ascending:false }).limit(limit)
-    if (tag) q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').contains('tags', [tag]).order('id',{ascending:false}).limit(limit)
-    const { data } = await q
-    return data || []
+  
+    // 1) 내 관심사 첫 태그 가져오기 (없으면 null)
+    const { data: { session } } = await supabase.auth.getSession()
+    const uid = session?.user?.id
+    let tag = null
+    if (uid) {
+      const r = await supabase
+        .from('user_settings')
+        .select('interests')
+        .eq('user_id', uid)
+        .maybeSingle()
+      // 첫 태그를 소문자로 정규화 (DB의 tags를 소문자로 맞춰 넣는 걸 권장)
+      tag = (r.data?.interests?.[0] || null)
+      if (tag) tag = String(tag).toLowerCase()
+    }
+  
+    // 2) 관심사 기반으로 먼저 시도
+    if (tag) {
+      const { data: filtered, error: err1 } = await supabase
+        .from('daily_vocab')
+        .select('id, word, meaning, example, tags')
+        .contains('tags', [tag])            // text[] contains (정확 매칭, 대소문자 구분)
+        .order('id', { ascending: false })
+        .limit(limit)
+  
+      // 매칭 결과가 있으면 그걸 반환
+      if (!err1 && filtered && filtered.length) return filtered
+    }
+  
+    // 3) 폴백: 최신 단어 아무거나 N개
+    const { data: any, error: err2 } = await supabase
+      .from('daily_vocab')
+      .select('id, word, meaning, example, tags')
+      .order('id', { ascending: false })
+      .limit(limit)
+    if (err2) {
+      console.error(err2)
+      return []
+    }
+    return any || []
   }
   
   async function loadMissions() {
