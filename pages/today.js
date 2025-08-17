@@ -164,10 +164,97 @@ export default function Today() {
                   </div>
                 </div>
               )}
+              {m.kind === 'speaking' && (
+                <div style={{ marginTop: 10 }}>
+                  <MicRecorder missionId={m.id} />
+                </div>
+              )}
             </li>
           ))}
         </ul>
       )}
     </main>
+  )
+}
+function MicRecorder({ missionId }) {
+  const [mediaRecorder, setMediaRecorder] = React.useState(null)
+  const [recording, setRecording] = React.useState(false)
+  const [chunks, setChunks] = React.useState([])
+  const [duration, setDuration] = React.useState(0)
+  const timerRef = React.useRef(null)
+
+  async function start() {
+    setChunks([])
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    mr.ondataavailable = (e) => { if (e.data.size > 0) setChunks(prev => [...prev, e.data]) }
+    mr.onstop = async () => {
+      try {
+        const blob = new Blob(chunks, { type: 'audio/webm' })
+        await upload(blob)
+      } catch (e) {
+        console.error(e); alert('업로드 실패')
+      } finally {
+        // 마이크 해제
+        stream.getTracks().forEach(t => t.stop())
+      }
+    }
+    mr.start()
+    setMediaRecorder(mr)
+    setRecording(true)
+    const startedAt = Date.now()
+    timerRef.current = setInterval(() => setDuration(Math.floor((Date.now() - startedAt)/1000)), 200)
+  }
+
+  function stop() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+    setRecording(false)
+    if (timerRef.current) clearInterval(timerRef.current)
+  }
+
+  async function upload(blob) {
+    // 1) 현재 사용자 ID 얻기
+    const { supabase } = await import('../utils/sb')
+    const { data: { session } } = await supabase.auth.getSession()
+    const uid = session?.user?.id
+    if (!uid) { alert('로그인이 필요합니다.'); return }
+
+    // 2) 서버 API로 업로드 요청 (바이너리 전송)
+    const filename = `mic.webm`
+    const res = await fetch('/api/upload-audio', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'x-user-id': uid,
+        'x-duration': String(duration || 0),
+        'x-filename': filename
+      },
+      body: await blob.arrayBuffer()
+    })
+    const j = await res.json()
+    if (!j.ok) { alert('업로드 실패'); return }
+
+    // 3) submissions 테이블에 기록 추가
+    const { error } = await supabase.from('submissions').insert({
+      mission_id: missionId,
+      user_id: uid,
+      kind: 'speaking',
+      audio_url: j.path,
+      duration_seconds: j.durationSeconds || null
+    })
+    if (error) { console.error(error); alert('제출 기록 저장 실패'); return }
+
+    alert('녹음 제출 완료!')
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {!recording ? (
+        <button onClick={start}>🎙️ 녹음 시작</button>
+      ) : (
+        <button onClick={stop}>⏹️ 녹음 종료</button>
+      )}
+      {recording && <span>{duration}s</span>}
+    </div>
   )
 }
