@@ -18,7 +18,42 @@ export default function Today() {
     setUser(session.user)
     await loadMissions()
   }
-
+  async function pickListeningByInterest() {
+    const { supabase } = await import('../utils/sb')
+    const { data: { session } } = await supabase.auth.getSession()
+    const uid = session?.user?.id
+    const { data: us } = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
+    const tags = us?.interests?.length ? us.interests : ['tech']
+  
+    // 관심사 태그 우선 검색 → 없으면 아무거나 1개
+    let { data } = await supabase
+      .from('listening_materials')
+      .select('id, title, audio_url, script, tags')
+      .contains('tags', [tags[0]])
+      .limit(1)
+    if (!data || !data.length) {
+      const any = await supabase.from('listening_materials').select('id, title, audio_url, script, tags').limit(1)
+      data = any.data || []
+    }
+    return data[0] || null
+  }
+  
+  async function getDailyVocab(limit = 5) {
+    const { supabase } = await import('../utils/sb')
+    // 간단: 최신 추가 단어 상위 N개 (관심사 필터는 tags 포함시도 → 없으면 전체)
+    const { data: us } = await supabase.auth.getSession().then(async ({ data:{ session }}) => {
+      const uid = session?.user?.id
+      if (!uid) return { interests:null }
+      const r = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
+      return r.data || { interests:null }
+    })
+    const tag = us?.interests?.[0]
+    let q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').order('id', { ascending:false }).limit(limit)
+    if (tag) q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').contains('tags', [tag]).order('id',{ascending:false}).limit(limit)
+    const { data } = await q
+    return data || []
+  }
+  
   async function loadMissions() {
     setLoading(true)
     const { supabase } = await import('../utils/sb')
@@ -189,6 +224,12 @@ export default function Today() {
                   <MicRecorder missionId={m.id} />
                 </div>
               )}
+              {m.kind === 'listening' && (
+                <ListeningBlock />
+              )}
+              {m.kind === 'vocab' && (
+                <VocabBlock missionId={m.id} />
+              )}
             </li>
           ))}
         </ul>
@@ -196,7 +237,8 @@ export default function Today() {
     </main>
   )
 }
-// today.js 맨 아래의 MicRecorder 를 이 버전으로 교체
+
+// 🎙️ Speaking 제출 + 자동 채점
 function MicRecorder({ missionId }) {
   const [mediaRecorder, setMediaRecorder] = useState(null)
   const [recording, setRecording] = useState(false)
@@ -268,7 +310,7 @@ function MicRecorder({ missionId }) {
       const j = await res.json()
       if (!j.ok) { alert('업로드 실패'); return }
 
-      // 2) submissions에 기록 + ID 반환
+      // 2) submissions에 기록
       const { data: ins, error } = await supabase
         .from('submissions')
         .insert({
@@ -283,7 +325,7 @@ function MicRecorder({ missionId }) {
 
       if (error || !ins?.id) { console.error(error); alert('제출 기록 저장 실패'); return }
 
-      // 3) 자동 채점 호출 (수동 버튼 없이 즉시 실행)
+      // 3) 자동 채점 호출
       try {
         const scoreRes = await fetch('/api/score-speech', {
           method: 'POST',
@@ -294,7 +336,7 @@ function MicRecorder({ missionId }) {
         if (out.ok) {
           alert('녹음 제출 + 자동 채점 완료! 리포트에서 확인하세요.')
         } else {
-          alert('녹음 제출은 성공, 채점 실패: ' + (out.error || 'unknown') + (out.details ? `\n- ${out.details}` : ''))
+          alert('녹음 제출은 성공, 채점 실패: ' + (out.error || 'unknown'))
         }
       } catch (e) {
         alert('녹음 제출은 성공, 채점 호출 실패')
@@ -303,7 +345,6 @@ function MicRecorder({ missionId }) {
       console.error(e)
       alert('업로드 중 오류가 발생했어요.')
     } finally {
-      // 다음 녹음을 위해 초기화
       setChunks([])
       setDuration(0)
     }
@@ -319,4 +360,115 @@ function MicRecorder({ missionId }) {
       {recording && <span>{duration}s</span>}
     </div>
   )
+}
+
+// 📚 Listening Block
+function ListeningBlock() {
+  const [mat, setMat] = useState(null)
+  const [done, setDone] = useState(false)
+
+  useEffect(() => { (async () => { setMat(await pickListeningByInterest()) })() }, [])
+
+  async function markDone() {
+    const { supabase } = await import('../utils/sb')
+    const { data: { session } } = await supabase.auth.getSession()
+    const uid = session?.user?.id
+    const today = new Date().toISOString().slice(0,10)
+    const { error } = await supabase.from('submissions').insert({
+      user_id: uid, date: today, kind: 'listening',
+      meta: { material_id: mat?.id }
+    })
+    if (error) { console.error(error); alert('제출 실패'); return }
+    setDone(true)
+    alert('리스닝 완료 체크!')
+  }
+
+  if (!mat) return <div>자료 불러오는 중…</div>
+  return (
+    <div style={{ marginTop:10 }}>
+      <div style={{ fontWeight:600 }}>{mat.title}</div>
+      <audio controls src={mat.audio_url} style={{ width:'100%', marginTop:8 }} />
+      {mat.script && <details style={{ marginTop:6 }}>
+        <summary>스크립트/요약</summary>
+        <pre style={{whiteSpace:'pre-wrap'}}>{mat.script}</pre>
+      </details>}
+      <button onClick={markDone} disabled={done} style={{ marginTop:8 }}>
+        {done ? '완료됨' : '들었어요(완료)'}
+      </button>
+    </div>
+  )
+}
+
+// 📝 Vocab Block
+function VocabBlock({ missionId }) {
+  const [items, setItems] = useState([])
+  const [done, setDone] = useState(false)
+
+  useEffect(() => { (async () => { setItems(await getDailyVocab(5)) })() }, [])
+
+  async function complete() {
+    const { supabase } = await import('../utils/sb')
+    const { data: { session } } = await supabase.auth.getSession()
+    const uid = session?.user?.id
+    const today = new Date().toISOString().slice(0,10)
+    const { error } = await supabase.from('submissions').insert({
+      mission_id: missionId, user_id: uid, date: today, kind: 'vocab',
+      meta: { vocab_ids: items.map(i=>i.id) }
+    })
+    if (error) { console.error(error); alert('제출 실패'); return }
+    setDone(true)
+    alert('단어 암기 완료!')
+  }
+
+  if (!items.length) return <div>단어 불러오는 중…</div>
+  return (
+    <div style={{ marginTop:10 }}>
+      <ul>
+        {items.map(it => (
+          <li key={it.id} style={{ margin:'8px 0' }}>
+            <b>{it.word}</b> — {it.meaning}
+            {it.example && <div style={{opacity:.8, fontSize:13}}>{it.example}</div>}
+          </li>
+        ))}
+      </ul>
+      <button onClick={complete} disabled={done} style={{ marginTop:6 }}>
+        {done ? '완료됨' : '오늘 단어 5개 암기 완료'}
+      </button>
+    </div>
+  )
+}
+
+// ⚙️ helper (관심사 기반 추천)
+async function pickListeningByInterest() {
+  const { supabase } = await import('../utils/sb')
+  const { data: { session } } = await supabase.auth.getSession()
+  const uid = session?.user?.id
+  const { data: us } = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
+  const tags = us?.interests?.length ? us.interests : ['tech']
+
+  let { data } = await supabase
+    .from('listening_materials')
+    .select('id, title, audio_url, script, tags')
+    .contains('tags', [tags[0]])
+    .limit(1)
+  if (!data || !data.length) {
+    const any = await supabase.from('listening_materials').select('id, title, audio_url, script, tags').limit(1)
+    data = any.data || []
+  }
+  return data[0] || null
+}
+
+async function getDailyVocab(limit = 5) {
+  const { supabase } = await import('../utils/sb')
+  const { data: { session } } = await supabase.auth.getSession()
+  const uid = session?.user?.id
+  let tag = null
+  if (uid) {
+    const r = await supabase.from('user_settings').select('interests').eq('user_id', uid).maybeSingle()
+    tag = r.data?.interests?.[0]
+  }
+  let q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').order('id', { ascending:false }).limit(limit)
+  if (tag) q = supabase.from('daily_vocab').select('id, word, meaning, example, tags').contains('tags', [tag]).order('id',{ascending:false}).limit(limit)
+  const { data } = await q
+  return data || []
 }
