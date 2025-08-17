@@ -209,6 +209,7 @@ export default function Today() {
     </main>
   )
 }
+// today.js 맨 아래의 MicRecorder 를 이 버전으로 교체
 function MicRecorder({ missionId }) {
   const [mediaRecorder, setMediaRecorder] = useState(null)
   const [recording, setRecording] = useState(false)
@@ -216,68 +217,97 @@ function MicRecorder({ missionId }) {
   const [duration, setDuration] = useState(0)
   const timerRef = useRef(null)
 
-  async function start() {
-    setChunks([])
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-    mr.ondataavailable = (e) => { if (e.data.size > 0) setChunks(prev => [...prev, e.data]) }
-    mr.onstop = async () => {
-      try {
-        const blob = new Blob(chunks, { type: 'audio/webm' })
-        await upload(blob)
-      } catch (e) {
-        console.error(e); alert('업로드 실패')
-      } finally {
-        // 마이크 해제
-        stream.getTracks().forEach(t => t.stop())
-      }
-    }
-    mr.start()
-    setMediaRecorder(mr)
-    setRecording(true)
-    const startedAt = Date.now()
-    timerRef.current = setInterval(() => setDuration(Math.floor((Date.now() - startedAt)/1000)), 200)
+  function getMime() {
+    // Chrome/Edge 대부분 지원
+    const preferred = 'audio/webm;codecs=opus'
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(preferred)) return preferred
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm'
+    alert('이 브라우저는 음성 녹음(webm)을 지원하지 않아요. Chrome/Edge로 시도해주세요.')
+    throw new Error('MediaRecorder not supported')
   }
 
-  function stop() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+  async function start() {
+    try {
+      setChunks([])
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream, { mimeType: getMime(), audioBitsPerSecond: 128000 })
+      mr.addEventListener('dataavailable', (e) => {
+        if (e.data && e.data.size > 0) setChunks(prev => [...prev, e.data])
+      })
+      mr.addEventListener('error', (e) => console.error('MediaRecorder error', e))
+      // timeslice 주면 브라우저가 주기적으로 chunk를 내보냄 (마지막 조각 누락 방지)
+      mr.start(500) // 0.5초마다 dataavailable 발생
+      setMediaRecorder(mr)
+      setRecording(true)
+      const startedAt = Date.now()
+      timerRef.current = setInterval(() => setDuration(Math.floor((Date.now() - startedAt) / 1000)), 200)
+    } catch (e) {
+      console.error(e)
+      alert('마이크 권한을 허용해 주세요.')
+    }
+  }
+
+  async function stop() {
+    if (!mediaRecorder) return
+    if (duration < 3) {
+      alert('최소 3초 이상 녹음해 주세요.')
+      return
+    }
+    const stream = mediaRecorder.stream
+    // stop() 이후 마지막 dataavailable 이 오기까지 기다리기
+    const done = new Promise(resolve => {
+      mediaRecorder.addEventListener('stop', () => resolve(), { once: true })
+    })
+    mediaRecorder.stop()
     setRecording(false)
     if (timerRef.current) clearInterval(timerRef.current)
+    await done
+    stream.getTracks().forEach(t => t.stop())
+    await uploadCombined()
   }
 
-  async function upload(blob) {
-    // 1) 현재 사용자 ID 얻기
-    const { supabase } = await import('../utils/sb')
-    const { data: { session } } = await supabase.auth.getSession()
-    const uid = session?.user?.id
-    if (!uid) { alert('로그인이 필요합니다.'); return }
+  async function uploadCombined() {
+    try {
+      if (!chunks.length) { alert('녹음 데이터가 비어 있어요. 다시 시도해 주세요.'); return }
+      const blob = new Blob(chunks, { type: 'audio/webm' })
+      console.log('[MicRecorder] blob size:', blob.size, 'bytes, duration(s):', duration)
 
-    // 2) 서버 API로 업로드 요청 (바이너리 전송)
-    const filename = `mic.webm`
-    const res = await fetch('/api/upload-audio', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'x-user-id': uid,
-        'x-duration': String(duration || 0),
-        'x-filename': filename
-      },
-      body: await blob.arrayBuffer()
-    })
-    const j = await res.json()
-    if (!j.ok) { alert('업로드 실패'); return }
+      const { supabase } = await import('../utils/sb')
+      const { data: { session } } = await supabase.auth.getSession()
+      const uid = session?.user?.id
+      if (!uid) { alert('로그인이 필요합니다.'); return }
 
-    // 3) submissions 테이블에 기록 추가
-    const { error } = await supabase.from('submissions').insert({
-      mission_id: missionId,
-      user_id: uid,
-      kind: 'speaking',
-      audio_url: j.path,
-      duration_seconds: j.durationSeconds || null
-    })
-    if (error) { console.error(error); alert('제출 기록 저장 실패'); return }
+      const res = await fetch('/api/upload-audio', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'x-user-id': uid,
+          'x-duration': String(duration || 0),
+          'x-filename': 'mic.webm'
+        },
+        body: await blob.arrayBuffer()
+      })
+      const j = await res.json()
+      if (!j.ok) { alert('업로드 실패'); return }
 
-    alert('녹음 제출 완료!')
+      const { error } = await supabase.from('submissions').insert({
+        mission_id: missionId,
+        user_id: uid,
+        kind: 'speaking',
+        audio_url: j.path,
+        duration_seconds: j.durationSeconds || null
+      })
+      if (error) { console.error(error); alert('제출 기록 저장 실패'); return }
+
+      alert('녹음 제출 완료!')
+    } catch (e) {
+      console.error(e)
+      alert('업로드 중 오류가 발생했어요.')
+    } finally {
+      // 다음 녹음을 위해 초기화
+      setChunks([])
+      setDuration(0)
+    }
   }
 
   return (
