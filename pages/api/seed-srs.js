@@ -1,5 +1,6 @@
 // pages/api/seed-srs.js
-// service_role로 SRS 샘플 12개 삽입 (RLS/권한 문제 회피)
+// service_role로 SRS 샘플 12개 삽입 (RLS/권한 회피)
+// 테이블이 없으면 "table-missing" 에러를 명시적으로 반환
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
   try {
@@ -9,13 +10,11 @@ export default async function handler(req, res) {
     const { createClient } = await import('@supabase/supabase-js')
     const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
 
-    // 테이블 없으면 만들기(안전망)
-    await supabase.rpc('noop').catch(() => {}) // no-op
-    await supabase.from('srs_reviews').select('id').limit(1)
-      .catch(async () => {
-        // 마지막 안전망: 테이블이 없으면 생성 (간단 버전)
-        await supabase.rpc('noop').catch(() => {})
-      })
+    // 테이블 존재 여부 검사
+    const probe = await supabase.from('srs_reviews').select('id').limit(1)
+    if (probe.error && String(probe.error.message || probe.error).includes('does not exist')) {
+      return res.status(400).json({ ok:false, error:'table-missing' })
+    }
 
     const today = new Date().toISOString().slice(0,10)
     const items = [
@@ -43,6 +42,7 @@ export default async function handler(req, res) {
 
     const { error } = await supabase.from('srs_reviews').insert(items)
     if (error) return res.status(500).json({ ok:false, error:'insert-failed', details:String(error.message || error) })
+
     return res.status(200).json({ ok:true })
   } catch (e) {
     return res.status(500).json({ ok:false, error:'server-error', details:String(e.message || e) })
