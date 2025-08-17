@@ -1,6 +1,6 @@
 
 // 1) pages/today.js — 제출 UI + 임시 채점 버튼 추가 버전
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 
 export default function Today() {
   const [loading, setLoading] = useState(true)
@@ -177,11 +177,11 @@ export default function Today() {
   )
 }
 function MicRecorder({ missionId }) {
-  const [mediaRecorder, setMediaRecorder] = React.useState(null)
-  const [recording, setRecording] = React.useState(false)
-  const [chunks, setChunks] = React.useState([])
-  const [duration, setDuration] = React.useState(0)
-  const timerRef = React.useRef(null)
+  const [mediaRecorder, setMediaRecorder] = useState(null)
+  const [recording, setRecording] = useState(false)
+  const [chunks, setChunks] = useState([])
+  const [duration, setDuration] = useState(0)
+  const timerRef = useRef(null)
 
   async function start() {
     setChunks([])
