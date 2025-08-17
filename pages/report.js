@@ -1,5 +1,4 @@
-
-// 3) pages/report.js — 간단 리포트(평균/최근/약점 Top3)
+// pages/report.js — 간단 리포트(평균/최근/약점 Top3)
 import { useEffect, useState } from 'react'
 
 export default function Report() {
@@ -14,13 +13,14 @@ export default function Report() {
     if (!session) { window.location.href = '/login'; return }
     const uid = session.user.id
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('auto_scores')
       .select('created_at, score')
       .eq('user_id', uid)
       .order('created_at', { ascending: false })
       .limit(50)
 
+    if (error) console.error(error)
     setRows(data || [])
     if (data && data.length) {
       const nums = data.map(r => r.score?.overall).filter(Boolean)
@@ -30,7 +30,6 @@ export default function Report() {
   }
 
   function topWeakness() {
-    // 매우 단순: 마지막 점수에서 가장 낮은 서브 스코어 1~3개
     if (!rows.length) return []
     const last = rows[0].score || {}
     const pairs = Object.entries(last).filter(([k]) => k !== 'overall')
@@ -41,7 +40,7 @@ export default function Report() {
     <main style={{ padding: 20, fontFamily: 'system-ui' }}>
       <h1>나의 리포트</h1>
       {!rows.length ? (
-        <p>아직 점수가 없어요. Today에서 제출 후 임시 채점을 눌러보세요.</p>
+        <p>아직 점수가 없어요. Today에서 글 제출 후 ‘임시 채점’을 눌러보세요.</p>
       ) : (
         <>
           <p>최근 채점 개수: {rows.length} / 평균 Overall: {avg}</p>
