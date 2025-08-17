@@ -1,4 +1,4 @@
-// pages/report.js — 리포트 v2 (탭/평균/최근/피드백 표시)
+// pages/report.js — v2 (스피킹/라이팅 탭, 평균/추세, 최근 피드백)
 import { useEffect, useMemo, useState } from 'react'
 
 export default function Report() {
@@ -15,7 +15,6 @@ export default function Report() {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) { window.location.href = '/login'; return }
     setEmail(session.user.email)
-
     const uid = session.user.id
     const { data, error } = await supabase
       .from('auto_scores')
@@ -34,22 +33,20 @@ export default function Report() {
     const nums = rows.map(r => r.score?.overall).filter(n => typeof n === 'number')
     const avg = nums.length ? Math.round(nums.reduce((s,n)=>s+n,0)/nums.length) : null
     const latest = rows[0]
-    // 아주 단순한 추세: 최근 5개 평균 vs 그 전 5개 평균
     const first5 = nums.slice(0,5), next5 = nums.slice(5,10)
     const avgA = first5.length ? (first5.reduce((s,n)=>s+n,0)/first5.length) : null
-    const avgB = next5.length ? (next5.reduce((s,n)=>s+n,0)/next5.length) : null
+    const avgB = next5.length ? (next5.reduce((s,n,)=>s+n,0)/next5.length) : null
     const trend = (avgA && avgB) ? Math.round(avgA - avgB) : null
     return { avg, latest, trend }
   }, [rows])
 
-  function renderFeedback(md) {
+  function Feedback({ md }) {
     if (!md) return null
-    // 아주 가볍게 마크다운 불릿만 처리
     const lines = String(md).split('\n').map(s=>s.trim()).filter(Boolean)
     return (
       <ul style={{ marginTop: 6 }}>
         {lines.map((line, i) => {
-          const text = line.replace(/^[-*]\s?/, '')
+          const text = line.replace(/^[-*]\\s?/, '')
           return <li key={i} style={{ marginLeft: 18 }}>{text}</li>
         })}
       </ul>
@@ -58,7 +55,7 @@ export default function Report() {
 
   return (
     <main style={{ padding: 20, fontFamily: 'system-ui' }}>
-      <h1>나의 리포트</h1>
+      <h1>나의 리포트 <span style={{fontSize:12,opacity:.6}}>v2</span></h1>
       <div style={{opacity:.8, fontSize:13, marginBottom:8}}>로그인: {email || '-'}</div>
 
       {/* 탭 */}
@@ -73,4 +70,61 @@ export default function Report() {
           style={{ padding:'8px 12px', borderRadius:8, border:'1px solid #ccc',
                    background: kind==='writing' ? '#eef5ff' : 'white' }}
         >라이팅</button>
-        <a href="/today" style={{ marginLeft:'auto', textDecoration:'none'
+        <a href="/today" style={{ marginLeft:'auto', textDecoration:'none' }}>
+          <button style={{ padding:'8px 12px', borderRadius:8, border:'1px solid #ccc' }}>
+            오늘의 미션으로
+          </button>
+        </a>
+      </div>
+
+      {loading ? (
+        <p>불러오는 중…</p>
+      ) : !rows.length ? (
+        <p>아직 {kind === 'speaking' ? '스피킹' : '라이팅'} 점수가 없어요.
+          {' '}<a href="/today">/today</a>에서 제출/채점을 먼저 해보세요.</p>
+      ) : (
+        <>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:12 }}>
+            <div style={{ padding:12, border:'1px solid #ddd', borderRadius:12 }}>
+              <div style={{ fontSize:12, opacity:.7 }}>평균 Overall</div>
+              <div style={{ fontSize:28, fontWeight:700 }}>{metrics.avg ?? '-'}</div>
+            </div>
+            <div style={{ padding:12, border:'1px solid #ddd', borderRadius:12 }}>
+              <div style={{ fontSize:12, opacity:.7 }}>최근 대비 이전(Δ)</div>
+              <div style={{ fontSize:28, fontWeight:700 }}>
+                {metrics.trend === null ? '-' : (metrics.trend > 0 ? `+${metrics.trend}` : `${metrics.trend}`)}
+              </div>
+            </div>
+            <div style={{ padding:12, border:'1px solid #ddd', borderRadius:12 }}>
+              <div style={{ fontSize:12, opacity:.7 }}>최근 스코어 분해</div>
+              <div style={{ fontSize:14 }}>
+                {metrics.latest ? (
+                  <>
+                    발음 {metrics.latest.score?.pronunciation ?? '-'} ·
+                    유창성 {metrics.latest.score?.fluency ?? '-'} ·
+                    문법 {metrics.latest.score?.grammar ?? '-'} ·
+                    어휘 {metrics.latest.score?.lexical ?? '-'}
+                  </>
+                ) : '-'}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop:16, padding:12, border:'1px solid #ddd', borderRadius:12 }}>
+            <div style={{ fontSize:14, fontWeight:600 }}>최근 피드백</div>
+            <Feedback md={metrics.latest?.feedback_md} />
+          </div>
+
+          <h3 style={{ marginTop:18 }}>최근 점수</h3>
+          <ul>
+            {rows.map((r, i) => (
+              <li key={i} style={{ margin:'6px 0' }}>
+                {new Date(r.created_at).toLocaleString()} — Overall {r.score?.overall}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </main>
+  )
+}
