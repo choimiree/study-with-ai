@@ -167,6 +167,34 @@ export default function Today() {
               {m.kind === 'speaking' && (
                 <div style={{ marginTop: 10 }}>
                   <MicRecorder missionId={m.id} />
+                  <button
+                    onClick={async ()=>{
+                      // 가장 최근 speaking 제출 id 가져오기
+                      const { supabase } = await import('../utils/sb')
+                      const { data: { session } } = await supabase.auth.getSession()
+                      const uid = session?.user?.id
+                      const { data: subs } = await supabase
+                        .from('submissions')
+                        .select('id')
+                        .eq('mission_id', m.id).eq('user_id', uid)
+                        .eq('kind','speaking')
+                        .order('id',{ ascending: false })
+                        .limit(1)
+                      const submissionId = subs?.[0]?.id
+                      if (!submissionId) { alert('먼저 녹음 제출부터 해주세요.'); return }
+                      const res = await fetch('/api/score-speech', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ submissionId })
+                      })
+                      const j = await res.json()
+                      if (j.ok) alert('스피킹 자동 채점 완료! 리포트에서 확인하세요.')
+                      else alert('채점 실패')
+                    }}
+                    style={{ marginLeft: 8 }}
+                  >
+                    스피킹 자동 채점
+                  </button>
                 </div>
               )}
             </li>
