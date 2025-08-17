@@ -1,111 +1,112 @@
 // pages/api/score-speech.js
-// 스피킹 제출(녹음 파일) → 전사 → 채점(JSON 보장) → auto_scores 저장
-export const config = { api: { bodyParser: true } }
+// (안정 버전) 스피킹 제출 → 전사(whisper-1) → 채점(JSON) → auto_scores 저장
+export const config = { api: { bodyParser: true } };
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
   try {
-    const { submissionId } = req.body || {}
-    if (!submissionId) return res.status(400).json({ ok: false, error: 'submissionId required' })
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ ok: false, error: 'missing-openai-key' });
+    }
+
+    const { submissionId } = req.body || {};
+    if (!submissionId) return res.status(400).json({ ok: false, error: 'submissionId required' });
 
     // ---- Supabase(Admin) ----
-    const { createClient } = await import('@supabase/supabase-js')
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
 
     // 제출에서 사용자/파일 경로 조회
     const { data: sub, error: subErr } = await supabase
       .from('submissions')
       .select('user_id, audio_url')
       .eq('id', submissionId)
-      .maybeSingle()
-    if (subErr || !sub?.audio_url) return res.status(400).json({ ok: false, error: 'no-audio' })
+      .maybeSingle();
+
+    if (subErr) return res.status(500).json({ ok: false, error: 'db-read-failed' });
+    if (!sub?.audio_url) return res.status(400).json({ ok: false, error: 'no-audio' });
 
     // 서명 URL 생성 → 파일 다운로드
     const { data: signed, error: signErr } = await supabase
       .storage.from('speaking-audio')
-      .createSignedUrl(sub.audio_url, 60 * 10) // 10분 유효
-    if (signErr) return res.status(500).json({ ok: false, error: 'signed-url-failed' })
+      .createSignedUrl(sub.audio_url, 60 * 10);
+    if (signErr) return res.status(500).json({ ok: false, error: 'signed-url-failed' });
 
-    const audioResp = await fetch(signed.signedUrl)
-    const audioArrayBuf = await audioResp.arrayBuffer()
-    const audioBuffer = Buffer.from(audioArrayBuf)
+    const audioResp = await fetch(signed.signedUrl);
+    if (!audioResp.ok) return res.status(500).json({ ok: false, error: 'audio-download-failed' });
+    const audioArrayBuf = await audioResp.arrayBuffer();
+    const audioBuffer = Buffer.from(audioArrayBuf);
 
-    // ---- OpenAI: 전사 ----
-    // Audio API /audio/transcriptions — 모델: gpt-4o(-mini)-transcribe 또는 whisper-1
-    // Docs: https://platform.openai.com/docs/guides/audio
-    const OpenAI = (await import('openai')).default
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+    // ---- OpenAI: 전사 (whisper-1 안정 버전) ----
+    // toFile 헬퍼를 써서 Node Buffer -> File 변환
+    const OpenAI = (await import('openai')).default;
+    const { toFile } = await import('openai/uploads');
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // OpenAI SDK는 Node Readable/File 객체를 기대 → Buffer를 Blob로 감싸 전달
+    const file = await toFile(audioBuffer, 'speech.webm', { type: 'audio/webm' });
+
     const transcriptResp = await client.audio.transcriptions.create({
-      file: new File([audioBuffer], 'speech.webm', { type: 'audio/webm' }),
-      model: 'gpt-4o-mini-transcribe', // 필요시 'whisper-1'
-      // language: 'en'  // 영어 위주면 명시 가능
-    })
-    const transcript = transcriptResp.text || ''  // { text: "..." } 형태
+      file,
+      model: 'whisper-1', // 호환성이 좋아 안정적
+      // language: 'en', // 영어만이라면 명시 가능
+    });
 
-    // ---- OpenAI: 채점(Structured Output) ----
-    // JSON 스키마에 맞춰 안전하게 채점값을 받기
-    // Docs(Structured Outputs): https://platform.openai.com/docs/guides/structured-outputs
-    const scoringSchema = {
-      type: 'object',
-      properties: {
-        pronunciation: { type: 'integer', minimum: 0, maximum: 100 },
-        fluency:       { type: 'integer', minimum: 0, maximum: 100 },
-        grammar:       { type: 'integer', minimum: 0, maximum: 100 },
-        lexical:       { type: 'integer', minimum: 0, maximum: 100 },
-        overall:       { type: 'integer', minimum: 0, maximum: 100 },
-        feedback_md:   { type: 'string' }
-      },
-      required: ['pronunciation','fluency','grammar','lexical','overall','feedback_md'],
-      additionalProperties: false
-    }
+    const transcript = transcriptResp.text || '';
 
-    const resp = await client.responses.create({
+    // ---- OpenAI: 채점(JSON) ----
+    // SDK 버전과 상관없이 파싱 쉬운 json_object 모드로 요청
+    const chat = await client.chat.completions.create({
       model: 'gpt-4o-mini',
-      input: [
+      response_format: { type: 'json_object' },
+      messages: [
         {
           role: 'system',
           content:
-            'You are an English speaking coach. Score the user speaking at CEFR B1 target and OPIC IH baseline. ' +
-            'Return concise, actionable feedback in Markdown (2-4 bullets).'
+            'You are an English speaking coach. Score the user speaking with CEFR B1 target and OPIC IH baseline.'
         },
         {
           role: 'user',
           content:
             `Transcript:\n${transcript}\n\n` +
-            'Criteria: pronunciation, fluency, grammar, lexical variety. ' +
-            'Return 0-100 for each and overall. Keep feedback positive, specific, and short.'
+            'Return strict JSON with keys: pronunciation, fluency, grammar, lexical, overall (0-100 integers), ' +
+            'and feedback_md (short Markdown with 2-4 bullet points). Keep feedback positive and specific.'
         }
-      ],
-      // Structured Outputs (JSON schema hard guarantee)
-      response_format: { type: 'json_schema', json_schema: { name: 'SpeakingScore', schema: scoringSchema } }
-    })
+      ]
+    });
 
-    const parsed = JSON.parse(resp.output[0].content[0].text) // SDK v4 Responses 구조
-    // 혹시 overall이 없으면 평균으로 보정
+    let parsed;
+    try {
+      const content = chat.choices?.[0]?.message?.content || '{}';
+      parsed = JSON.parse(content);
+    } catch {
+      return res.status(500).json({ ok: false, error: 'json-parse-failed' });
+    }
+
+    const p = Number(parsed.pronunciation ?? 0);
+    const f = Number(parsed.fluency ?? 0);
+    const g = Number(parsed.grammar ?? 0);
+    const l = Number(parsed.lexical ?? 0);
     const overall = Number.isFinite(parsed.overall)
-      ? parsed.overall
-      : Math.round((parsed.pronunciation + parsed.fluency + parsed.grammar + parsed.lexical) / 4)
+      ? Number(parsed.overall)
+      : Math.round((p + f + g + l) / 4);
 
     // ---- 저장 ----
-    await supabase.from('auto_scores').insert({
+    const { error: insErr } = await supabase.from('auto_scores').insert({
       submission_id: submissionId,
       user_id: sub.user_id,
       kind: 'speaking',
-      score: {
-        pronunciation: parsed.pronunciation,
-        fluency: parsed.fluency,
-        grammar: parsed.grammar,
-        lexical: parsed.lexical,
-        overall
-      },
-      feedback_md: parsed.feedback_md
-    })
+      score: { pronunciation: p, fluency: f, grammar: g, lexical: l, overall },
+      feedback_md: String(parsed.feedback_md || '')
+    });
+    if (insErr) return res.status(500).json({ ok: false, error: 'db-insert-failed' });
 
-    return res.status(200).json({ ok: true, transcript, score: { ...parsed, overall } })
+    return res.status(200).json({ ok: true, transcript, score: { pronunciation: p, fluency: f, grammar: g, lexical: l, overall } });
   } catch (e) {
-    console.error(e)
-    return res.status(500).json({ ok: false, error: 'score-failed' })
+    console.error(e);
+    return res.status(500).json({ ok: false, error: 'score-failed' });
   }
 }
