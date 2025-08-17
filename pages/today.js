@@ -91,17 +91,38 @@ export default function Today() {
   async function submitWriting(missionId) {
     const text = answers[missionId]?.trim()
     if (!text) { alert('작성한 내용이 없어요.'); return }
+  
     const { supabase } = await import('../utils/sb')
     const { data: { session } } = await supabase.auth.getSession()
     const uid = session?.user?.id
-    const { error } = await supabase.from('submissions').insert({
-      mission_id: missionId,
-      user_id: uid,
-      kind: 'writing',
-      text_answer: text
-    })
-    if (error) { console.error(error); alert('제출 실패'); return }
-    alert('제출 완료! 임시 채점 버튼으로 점수를 넣어볼 수 있어요.')
+  
+    // 🔁 제출 + 제출ID 반환
+    const { data: inserted, error } = await supabase
+      .from('submissions')
+      .insert({
+        mission_id: missionId,
+        user_id: uid,
+        kind: 'writing',
+        text_answer: text
+      })
+      .select('id')
+      .single()
+  
+    if (error || !inserted?.id) { console.error(error); alert('제출 실패'); return }
+  
+    // 🤖 즉시 자동 채점(기존 임시 채점 API 재사용)
+    try {
+      const res = await fetch('/api/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ submissionId: inserted.id, kind: 'writing' })
+      })
+      const j = await res.json()
+      if (j.ok) alert('제출 + 자동 채점 완료! 리포트에서 확인하세요.')
+      else alert('제출은 성공했지만 채점 실패: ' + (j.error || 'unknown'))
+    } catch (e) {
+      alert('제출은 성공했지만 채점 호출 실패')
+    }
   }
 
   async function fakeScore(missionId) {
@@ -160,46 +181,12 @@ export default function Today() {
                   />
                   <div style={{ marginTop: 6, display:'flex', gap:8 }}>
                     <button onClick={()=>submitWriting(m.id)}>제출</button>
-                    <button onClick={()=>fakeScore(m.id)}>임시 채점</button>
                   </div>
                 </div>
               )}
               {m.kind === 'speaking' && (
                 <div style={{ marginTop: 10 }}>
                   <MicRecorder missionId={m.id} />
-                  <button
-                    onClick={async ()=>{
-                      // 가장 최근 speaking 제출 id 가져오기
-                      const { supabase } = await import('../utils/sb')
-                      const { data: { session } } = await supabase.auth.getSession()
-                      const uid = session?.user?.id
-                      const { data: subs } = await supabase
-                        .from('submissions')
-                        .select('id')
-                        .eq('mission_id', m.id).eq('user_id', uid)
-                        .eq('kind','speaking')
-                        .order('id',{ ascending: false })
-                        .limit(1)
-                      const submissionId = subs?.[0]?.id
-                      if (!submissionId) { alert('먼저 녹음 제출부터 해주세요.'); return }
-                      const res = await fetch('/api/score-speech', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ submissionId })
-                      })
-                      let j
-                      try { j = await res.json() } catch { j = { ok:false, error: 'invalid-json' } }
-                      
-                      if (j.ok) {
-                        alert('스피킹 자동 채점 완료! 리포트에서 확인하세요.')
-                      } else {
-                        alert('채점 실패: ' + (j.error || 'unknown'))
-                      }
-                    }}
-                    style={{ marginLeft: 8 }}
-                  >
-                    스피킹 자동 채점
-                  </button>
                 </div>
               )}
             </li>
@@ -218,7 +205,6 @@ function MicRecorder({ missionId }) {
   const timerRef = useRef(null)
 
   function getMime() {
-    // Chrome/Edge 대부분 지원
     const preferred = 'audio/webm;codecs=opus'
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(preferred)) return preferred
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm'
@@ -231,12 +217,9 @@ function MicRecorder({ missionId }) {
       setChunks([])
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const mr = new MediaRecorder(stream, { mimeType: getMime(), audioBitsPerSecond: 128000 })
-      mr.addEventListener('dataavailable', (e) => {
-        if (e.data && e.data.size > 0) setChunks(prev => [...prev, e.data])
-      })
+      mr.addEventListener('dataavailable', (e) => { if (e.data && e.data.size > 0) setChunks(prev => [...prev, e.data]) })
       mr.addEventListener('error', (e) => console.error('MediaRecorder error', e))
-      // timeslice 주면 브라우저가 주기적으로 chunk를 내보냄 (마지막 조각 누락 방지)
-      mr.start(500) // 0.5초마다 dataavailable 발생
+      mr.start(500) // 0.5초마다 chunk 수집
       setMediaRecorder(mr)
       setRecording(true)
       const startedAt = Date.now()
@@ -249,15 +232,9 @@ function MicRecorder({ missionId }) {
 
   async function stop() {
     if (!mediaRecorder) return
-    if (duration < 3) {
-      alert('최소 3초 이상 녹음해 주세요.')
-      return
-    }
+    if (duration < 3) { alert('최소 3초 이상 녹음해 주세요.'); return }
     const stream = mediaRecorder.stream
-    // stop() 이후 마지막 dataavailable 이 오기까지 기다리기
-    const done = new Promise(resolve => {
-      mediaRecorder.addEventListener('stop', () => resolve(), { once: true })
-    })
+    const done = new Promise(resolve => mediaRecorder.addEventListener('stop', () => resolve(), { once: true }))
     mediaRecorder.stop()
     setRecording(false)
     if (timerRef.current) clearInterval(timerRef.current)
@@ -277,6 +254,7 @@ function MicRecorder({ missionId }) {
       const uid = session?.user?.id
       if (!uid) { alert('로그인이 필요합니다.'); return }
 
+      // 1) 서버 API로 업로드 (Storage 저장)
       const res = await fetch('/api/upload-audio', {
         method: 'POST',
         headers: {
@@ -290,16 +268,37 @@ function MicRecorder({ missionId }) {
       const j = await res.json()
       if (!j.ok) { alert('업로드 실패'); return }
 
-      const { error } = await supabase.from('submissions').insert({
-        mission_id: missionId,
-        user_id: uid,
-        kind: 'speaking',
-        audio_url: j.path,
-        duration_seconds: j.durationSeconds || null
-      })
-      if (error) { console.error(error); alert('제출 기록 저장 실패'); return }
+      // 2) submissions에 기록 + ID 반환
+      const { data: ins, error } = await supabase
+        .from('submissions')
+        .insert({
+          mission_id: missionId,
+          user_id: uid,
+          kind: 'speaking',
+          audio_url: j.path,
+          duration_seconds: j.durationSeconds || null
+        })
+        .select('id')
+        .single()
 
-      alert('녹음 제출 완료!')
+      if (error || !ins?.id) { console.error(error); alert('제출 기록 저장 실패'); return }
+
+      // 3) 자동 채점 호출 (수동 버튼 없이 즉시 실행)
+      try {
+        const scoreRes = await fetch('/api/score-speech', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ submissionId: ins.id })
+        })
+        let out; try { out = await scoreRes.json() } catch { out = { ok:false, error:'invalid-json' } }
+        if (out.ok) {
+          alert('녹음 제출 + 자동 채점 완료! 리포트에서 확인하세요.')
+        } else {
+          alert('녹음 제출은 성공, 채점 실패: ' + (out.error || 'unknown') + (out.details ? `\n- ${out.details}` : ''))
+        }
+      } catch (e) {
+        alert('녹음 제출은 성공, 채점 호출 실패')
+      }
     } catch (e) {
       console.error(e)
       alert('업로드 중 오류가 발생했어요.')
