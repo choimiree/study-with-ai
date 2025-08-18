@@ -392,49 +392,69 @@ function MicRecorder({ missionId }) {
 
 // 📚 Listening Block
 function ListeningBlock() {
+  // null = 로딩, false = 자료 없음/실패, object = 정상
   const [mat, setMat] = useState(null)
   const [done, setDone] = useState(false)
 
-  useEffect(() => { (async () => {
-    try {
-      const picks = await getDailyPicks(5)
-      setMat(picks.listening || null)
-    } catch (e) {
-      console.error(e); setMat(null)
-    }
-  })() }, [])
+  useEffect(() => {
+    (async () => {
+      try {
+        const picks = await getDailyPicks(5)      // 반드시 정의되어 있어야 함
+        setMat(picks.listening || false)          // 자료 없으면 false
+      } catch (e) {
+        console.error('[ListeningBlock] daily-picks error:', e)
+        setMat(false)                             // 실패도 false
+      }
+    })()
+  }, [])
 
   async function markDone() {
-    const { supabase } = await import('../utils/sb')
-    const { data: { session } } = await supabase.auth.getSession()
-    const uid = session?.user?.id
-    const today = new Date().toISOString().slice(0,10)
-    const { error } = await supabase.from('submissions').insert({
-      user_id: uid, date: today, kind: 'listening',
-      meta: { material_id: mat?.id }
-    })
-    if (error) { console.error(error); alert('제출 실패'); return }
-    setDone(true)
-    alert('리스닝 완료 체크!')
+    try {
+      const { supabase } = await import('../utils/sb')
+      const { data: { session } } = await supabase.auth.getSession()
+      const uid = session?.user?.id
+      if (!uid) { alert('로그인이 필요합니다.'); return }
+
+      const res = await fetch('/api/submit-listening', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: uid, materialId: mat?.id })
+      })
+      const j = await res.json()
+      if (!j.ok) {
+        alert('제출 실패: ' + (j.error || 'unknown') + (j.details ? `\n- ${j.details}` : ''))
+        return
+      }
+      setDone(true)
+      alert('리스닝 완료 체크!')
+    } catch (e) {
+      console.error(e)
+      alert('제출 실패: ' + (e?.message || e))
+    }
   }
 
+  // ----- 렌더 -----
   if (mat === null) return <div>자료 불러오는 중…</div>
-  if (!mat) return <div>오늘 리스닝 자료가 없습니다.</div>
+  if (mat === false) return <div>오늘 리스닝 자료가 없습니다.</div>
 
   return (
     <div style={{ marginTop:10 }}>
       <div style={{ fontWeight:600 }}>{mat.title}</div>
       <audio controls src={mat.audio_url} style={{ width:'100%', marginTop:8 }} />
-      {mat.script && <details style={{ marginTop:6 }}>
-        <summary>스크립트/요약</summary>
-        <pre style={{whiteSpace:'pre-wrap'}}>{mat.script}</pre>
-      </details>}
+      {mat.script && (
+        <details style={{ marginTop:6 }}>
+          <summary>스크립트/요약</summary>
+          <pre style={{ whiteSpace:'pre-wrap' }}>{mat.script}</pre>
+        </details>
+      )}
       <button onClick={markDone} disabled={done} style={{ marginTop:8 }}>
         {done ? '완료됨' : '들었어요(완료)'}
       </button>
     </div>
   )
 }
+
+export default ListeningBlock
 
 // 📝 Vocab Block
 function VocabBlock({ missionId }) {
@@ -451,37 +471,24 @@ function VocabBlock({ missionId }) {
   })() }, [])
 
   async function complete() {
-    const { supabase } = await import('../utils/sb')
-    const { data: { session } } = await supabase.auth.getSession()
-    const uid = session?.user?.id
-    const today = new Date().toISOString().slice(0,10)
-    const { error } = await supabase.from('submissions').insert({
-      mission_id: missionId, user_id: uid, date: today, kind: 'vocab',
-      meta: { vocab_ids: (items || []).map(i=>i.id) }
-    })
-    if (error) { console.error(error); alert('제출 실패'); return }
-    setDone(true)
-    alert('단어 암기 완료!')
+    try {
+      const { supabase } = await import('../utils/sb')
+      const { data: { session } } = await supabase.auth.getSession()
+      const uid = session?.user?.id
+      if (!uid) { alert('로그인이 필요합니다.'); return }
+  
+      const vocabIds = (items || []).map(i => i.id)
+      const res = await fetch('/api/submit-vocab', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: uid, missionId, vocabIds })
+      })
+      const j = await res.json()
+      if (!j.ok) { alert('제출 실패: ' + (j.error || 'unknown') + (j.details ? `\n- ${j.details}` : '')); return }
+      setDone(true); alert('단어 암기 완료!')
+    } catch (e) {
+      alert('제출 실패: ' + (e?.message || e))
+    }
   }
-
-  if (items === null) return <div>단어 불러오는 중…</div>
-  if (!items.length) return <div>오늘 표시할 단어가 없습니다.</div>
-
-  return (
-    <div style={{ marginTop:10 }}>
-      <ul>
-        {items.map(it => (
-          <li key={it.id} style={{ margin:'8px 0' }}>
-            <b>{it.word}</b> — {it.meaning}
-            {it.example && <div style={{opacity:.8, fontSize:13}}>{it.example}</div>}
-          </li>
-        ))}
-      </ul>
-      <button onClick={complete} disabled={done} style={{ marginTop:6 }}>
-        {done ? '완료됨' : '오늘 단어 5개 암기 완료'}
-      </button>
-    </div>
-  )
 }
 
 // 하루 추천 가져오기 (없으면 생성해서 반환)
